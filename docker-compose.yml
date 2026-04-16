@@ -1,0 +1,31 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ouragentteams:latest
+    container_name: ouragentteams
+
+    # Mount user config and data for persistence across container rebuilds
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+
+    # Interactive terminal (required for CLI)
+    stdin_open: true
+    tty: true
+
+    environment:
+      # Point Ollama to the host machine
+      # macOS / Windows Docker Desktop: host.docker.internal works automatically
+      # Linux: set OLLAMA_HOST=http://172.17.0.1:11434 or use --network host below
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
+      # Optional: pass API keys from your shell environment
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+
+    # Extra hosts allows container to reach host's Ollama on Linux without host-network mode
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

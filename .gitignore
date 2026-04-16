@@ -1,0 +1,63 @@
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Secrets & credentials (NEVER commit these) ────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# ── Runtime data (personal, large, or binary) ────────────
+data/tasks/
+data/sessions/
+data/memory/
+data/vectorstore/
+data/task_history.db
+
+# Keep the data directory structure but not its contents
+!data/.gitkeep
+
+# ── User-generated config (accumulates personal data) ─────
+config/user_profile.json
+# models_profile.json is intentionally NOT ignored:
+# the empty {} template should be committed so the project works out of the box.
+
+# ── Test cache ────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── macOS ─────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDEs ──────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/
