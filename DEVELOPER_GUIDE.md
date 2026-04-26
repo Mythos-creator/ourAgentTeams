@@ -772,7 +772,7 @@ print(results)
 # 直接测试隐私扫描
 from src.privacy.guard import PrivacyGuard
 guard = PrivacyGuard()
-result = guard.sanitize("我的邮箱是 test@example.com，API Key 是 sk-abc123")
+result = guard.sanitize("我的邮箱是 test@example.com，凭据是 api_key=FakeTestCredential_0123456789ABCDEF")
 print(result.sanitized)
 print(result.placeholder_map)
 

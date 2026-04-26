@@ -17,7 +17,8 @@ def test_scan_no_sensitive(guard):
 
 
 def test_scan_detects_api_key(guard):
-    text = "Use api_key=sk-abc123def456ghi789jkl012mno"
+    # Match privacy_rules "API_KEY" without embedding sk-* (avoids gitleaks false positives)
+    text = "Use api_key=FakeTestCredential_0123456789ABCDEF"
     spans = guard.scan(text)
     names = [s.entity_type for s in spans]
     assert "API_KEY" in names
