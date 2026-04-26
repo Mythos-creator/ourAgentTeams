@@ -96,7 +96,11 @@ class AppConfig:
 
 def _parse_workers(raw: dict) -> tuple[list[WorkerEntry], list[WorkerEntry]]:
     local = [
-        WorkerEntry(model=w["model"], provider=w.get("provider", "ollama"))
+        WorkerEntry(
+            model=w["model"],
+            provider=w.get("provider", "ollama"),
+            strengths=w.get("strengths", []),
+        )
         for w in (raw.get("local") or [])
     ]
     api = [
@@ -169,7 +173,18 @@ def save_config(cfg: AppConfig, path: Path | None = None) -> None:
             "watchdog_timeout_s": cfg.leader.watchdog_timeout_s,
         },
         "workers": {
-            "local": [{"model": w.model, "provider": w.provider} for w in cfg.workers_local],
+            "local": [
+                {
+                    k: v
+                    for k, v in {
+                        "model": w.model,
+                        "provider": w.provider,
+                        "strengths": w.strengths or None,
+                    }.items()
+                    if v is not None
+                }
+                for w in cfg.workers_local
+            ],
             "api": [
                 {
                     k: v

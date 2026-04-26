@@ -1,51 +1,39 @@
 leader:
-  model: qwen2.5:72b
+  model: qwen3.5:4b
   provider: ollama
-  ollama_base_url: http://localhost:11434
+  ollama_base_url: http://127.0.0.1:11434
   fallbacks:
-    - model: deepseek-r1:32b
-      provider: ollama
-    - model: llama3.3:70b
-      provider: ollama
-    - model: qwen2.5:14b
-      provider: ollama
+  - model: deepseek-r1:32b
+    provider: ollama
+  - model: llama3.3:70b
+    provider: ollama
+  - model: qwen2.5:14b
+    provider: ollama
   heartbeat_interval_s: 5
   watchdog_timeout_s: 30
-
 workers:
   local:
-    - model: qwen2.5:7b
-      provider: ollama
-    - model: llama3.2:3b
-      provider: ollama
+  - model: qwen3.5:4b
+    provider: ollama
+    strengths: [general, coding, reasoning]
+  - model: gemma4:e2b
+    provider: ollama
+    strengths: [creative, knowledge]
   api: []
-  # api:
-  #   - model: claude-3-5-sonnet-20241022
-  #     api_key: ${ANTHROPIC_API_KEY}
-  #     strengths: [backend, code_review, analysis]
-  #   - model: gemini-1.5-pro
-  #     api_key: ${GOOGLE_API_KEY}
-  #     strengths: [frontend, multimodal, long_context]
-  #   - model: gpt-4o
-  #     api_key: ${OPENAI_API_KEY}
-  #     strengths: [writing, reasoning, general]
-
 monitor:
   heartbeat_interval_s: 10
   timeout_threshold_s: 120
   max_retries: 3
-
 cost:
   monthly_budget_usd: 20.0
   importance_threshold_local: 5
   importance_threshold_best: 8
-
 privacy:
   enabled: true
   entities:
-    - PERSON
-    - EMAIL_ADDRESS
-    - PHONE_NUMBER
-    - CREDIT_CARD
-    - API_KEY
-    - PASSWORD
+  - PERSON
+  - EMAIL_ADDRESS
+  - PHONE_NUMBER
+  - CREDIT_CARD
+  - API_KEY
+  - PASSWORD

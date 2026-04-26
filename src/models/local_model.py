@@ -27,6 +27,21 @@ class OllamaWorker(BaseModelWorker):
             self._client = ollama.AsyncClient(host=self._base_url)
         return self._client
 
+    @staticmethod
+    def _normalize_response(resp: Any) -> dict[str, Any]:
+        """Normalize Ollama SDK responses across versions."""
+        if isinstance(resp, dict):
+            return resp
+        if hasattr(resp, "model_dump"):
+            dumped = resp.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        if hasattr(resp, "dict"):
+            dumped = resp.dict()
+            if isinstance(dumped, dict):
+                return dumped
+        return {}
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -41,26 +56,30 @@ class OllamaWorker(BaseModelWorker):
             messages=messages,
             options={"temperature": temperature, "num_predict": max_tokens},
         )
+        resp_dict = self._normalize_response(resp)
         elapsed = time.perf_counter() - t0
 
-        prompt_tokens = resp.get("prompt_eval_count", 0) or 0
-        completion_tokens = resp.get("eval_count", 0) or 0
+        prompt_tokens = resp_dict.get("prompt_eval_count", 0) or 0
+        completion_tokens = resp_dict.get("eval_count", 0) or 0
+        message = resp_dict.get("message") or {}
+        content = message.get("content", "")
 
         return ModelResponse(
-            content=resp["message"]["content"],
+            content=content,
             model=self.model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
             elapsed_s=round(elapsed, 2),
-            raw={"_cost_usd": 0.0, **resp},
+            raw={"_cost_usd": 0.0, **resp_dict},
         )
 
     async def ping(self) -> bool:
         try:
             client = self._ensure_client()
-            models = await client.list()
-            names = [m.get("name", m.get("model", "")) for m in models.get("models", [])]
+            models_resp = await client.list()
+            models_dict = self._normalize_response(models_resp)
+            names = [m.get("name", m.get("model", "")) for m in models_dict.get("models", [])]
             return any(self.model in n for n in names)
         except Exception:
             return False
@@ -69,6 +88,7 @@ class OllamaWorker(BaseModelWorker):
         try:
             client = self._ensure_client()
             resp = await client.list()
-            return [m.get("name", m.get("model", "")) for m in resp.get("models", [])]
+            models_dict = self._normalize_response(resp)
+            return [m.get("name", m.get("model", "")) for m in models_dict.get("models", [])]
         except Exception:
             return []

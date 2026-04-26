@@ -17,6 +17,9 @@ from src.models.base import BaseModelWorker
 PLAN_PROMPT_TEMPLATE = """\
 你是一个多智能体团队的 Leader，负责把用户任务拆解为可独立执行的子任务。
 
+## 可用工具（MCP）
+{tool_context}
+
 ## 可用工作模型及其擅长领域
 {worker_capabilities}
 
@@ -80,6 +83,7 @@ class Subtask:
             "estimated_tokens": self.estimated_tokens,
             "assigned_model": self.assigned_model,
             "status": self.status,
+            "result": self.result,
         }
 
 
@@ -124,12 +128,14 @@ async def plan_task(
     worker_profiles: dict | None = None,
     user_preferences: str = "",
     rag_context: str = "",
+    tool_context: str = "",
 ) -> TaskPlan:
     """Ask the Leader LLM to decompose a task into subtasks."""
     prompt = PLAN_PROMPT_TEMPLATE.format(
         worker_capabilities=_build_capabilities_text(worker_profiles or {}),
         user_preferences=user_preferences or "无已知偏好",
         rag_context=rag_context or "无参考信息",
+        tool_context=tool_context or "当前未提供可调用工具",
         task_description=task_description,
     )
 

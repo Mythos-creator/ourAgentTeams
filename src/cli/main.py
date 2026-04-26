@@ -2,58 +2,65 @@
 
 from __future__ import annotations
 
-import asyncio
+import datetime
+import os
+import subprocess
 import sys
+import time
 from getpass import getpass
 from typing import Any, Optional
 
 import typer
 from rich.prompt import Confirm, Prompt
 
+from src.cli.coro import run_coro as _run
 from src.cli.display import (
     console, cost_panel, create_progress, header_panel,
     model_report_table, privacy_result, savings_panel,
     subtask_tree, workers_table,
 )
 from src.config import (
-    AppConfig, WorkerEntry, load_config, load_models_profile,
+    AppConfig, DATA_DIR, WorkerEntry, load_config, load_models_profile,
     load_user_profile, save_config, save_user_profile,
 )
 from src.cost.calculator import CostTracker
 from src.leader.orchestrator import Orchestrator
+from src.memory.task_history import list_tasks
 from src.memory.capability_store import get_all_verdicts, get_savings_suggestions
 from src.models.local_model import OllamaWorker
 
 app = typer.Typer(
     name="ourAgentTeams",
     help="ourAgentTeams — local LLM Leader orchestrates your AI workforce.",
-    no_args_is_help=True,
 )
 
 leader_app = typer.Typer(help="Leader model management")
 config_app = typer.Typer(help="Worker model & API key management")
 profile_app = typer.Typer(help="User preference management")
 report_app = typer.Typer(help="Performance reports")
+sessions_app = typer.Typer(help="Session management")
 
 app.add_typer(leader_app, name="leader")
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
 app.add_typer(report_app, name="report")
+app.add_typer(sessions_app, name="sessions")
 
 
-# ── Helpers ──────────────────────────────────────────────
+@app.callback(invoke_without_command=True)
+def _default_command(ctx: typer.Context) -> None:
+    """With no subcommand, open dual-mode interactive session (Single + Team)."""
+    if ctx.invoked_subcommand is None:
+        if not sys.stdin.isatty():
+            console.print(
+                "[yellow]非交互式环境：请使用 [bold]ouragentteams start \"…\"[/bold] "
+                "或 [bold]ouragentteams --help[/bold][/yellow]"
+            )
+            raise typer.Exit(1)
+        from src.cli.interactive import run_interactive
 
-def _run(coro):
-    """Run an async coroutine from sync context."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, coro).result()
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+        run_interactive()
+        raise typer.Exit(0)
 
 
 async def _progress_callback(event: str, data: dict[str, Any]) -> None:
@@ -139,10 +146,19 @@ async def _progress_callback(event: str, data: dict[str, Any]) -> None:
 
 # ── Core commands ────────────────────────────────────────
 
+@app.command("chat")
+def chat() -> None:
+    """Interactive REPL with Single + Team modes (default: Single — smart model routing)."""
+    from src.cli.interactive import run_interactive
+
+    run_interactive()
+
+
 @app.command()
 def start(
     task: str = typer.Argument(..., help="Task description"),
     budget: float = typer.Option(None, "--budget", "-b", help="Override budget for this task (USD)"),
+    start_watchdog: bool = typer.Option(True, "--watchdog/--no-watchdog", help="Start watchdog process"),
 ):
     """Submit a task to ourAgentTeams."""
     cfg = load_config()
@@ -154,6 +170,12 @@ def start(
         orch.cost_tracker.budget_usd = budget
 
     orch.set_progress_callback(_progress_callback)
+    if start_watchdog:
+        subprocess.Popen(
+            [sys.executable, "-m", "src.watchdog", "--session", orch.session_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     try:
         result = _run(orch.run(task))
@@ -164,6 +186,84 @@ def start(
     console.print("\n[bold]═══ Final Output ═══[/bold]\n")
     console.print(result.final_output)
     console.print(f"\n[dim]Average quality: {result.total_quality_avg:.1f}/10[/dim]")
+
+
+@app.command("resume")
+def resume(
+    session_id: str = typer.Argument("latest", help="Session id or 'latest'"),
+):
+    """Resume a previous session from snapshot."""
+    cfg = load_config()
+    sid = session_id
+    if sid == "latest":
+        sdir = DATA_DIR / "sessions"
+        candidates = [p for p in sdir.glob("sess_*") if (p / "state.json").exists()] if sdir.exists() else []
+        if not candidates:
+            console.print("[red]No resumable session found.[/red]")
+            raise typer.Exit(1)
+        sid = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0].name
+
+    try:
+        orch = Orchestrator.from_snapshot(sid, cfg=cfg)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    console.print(header_panel(sid, cfg.leader.model, "resuming"))
+    orch.set_progress_callback(_progress_callback)
+    result = _run(orch.resume())
+    console.print("\n[bold]═══ Final Output ═══[/bold]\n")
+    console.print(result.final_output)
+
+
+@sessions_app.command("list")
+def sessions_list(
+    limit: int = typer.Option(20, "--limit", "-n", help="Max sessions to display"),
+):
+    """List latest saved sessions."""
+    rows = list_tasks(limit=limit)
+    if not rows:
+        console.print("[dim]No sessions found.[/dim]")
+        return
+    console.print("[bold]Recent sessions:[/bold]")
+    for t in rows:
+        completed = t.completed_at.strftime("%Y-%m-%d %H:%M:%S") if t.completed_at else "-"
+        console.print(
+            f"  - [cyan]{t.id}[/cyan] status={t.status} cost=${t.total_cost_usd:.4f} completed={completed}"
+        )
+
+
+@app.command("schedule")
+def schedule(
+    task: str = typer.Argument(..., help="Task description"),
+    cron: str = typer.Option(..., "--cron", help='Cron expression, e.g. "0 8 * * *"'),
+    max_runs: int = typer.Option(0, "--max-runs", help="Stop after N runs; 0 = infinite"),
+):
+    """Schedule recurring tasks with cron expression."""
+    try:
+        from croniter import croniter
+    except ImportError:
+        console.print("[red]croniter not installed. Run pip install croniter[/red]")
+        raise typer.Exit(1)
+
+    cfg = load_config()
+    itr = croniter(cron, datetime.datetime.now())
+    runs = 0
+    console.print(f"[bold]Scheduler started[/bold] cron=[cyan]{cron}[/cyan]")
+    while True:
+        if max_runs and runs >= max_runs:
+            console.print("[green]Reached max runs. Exiting scheduler.[/green]")
+            return
+        nxt = itr.get_next(datetime.datetime)
+        wait_s = max((nxt - datetime.datetime.now()).total_seconds(), 0)
+        console.print(f"[dim]Next run at {nxt.isoformat(sep=' ', timespec='seconds')}[/dim]")
+        time.sleep(wait_s)
+
+        orch = Orchestrator(cfg)
+        orch.set_progress_callback(_progress_callback)
+        console.print(f"[yellow]Running scheduled task #{runs + 1}[/yellow]")
+        _run(orch.run(task))
+        runs += 1
 
 
 @app.command()

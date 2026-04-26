@@ -11,6 +11,7 @@ The Orchestrator wires together every module:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import json
 import time
@@ -30,10 +31,11 @@ from src.leader.integrator import (
 )
 from src.leader.model_selector import assign_models, get_fallback_worker
 from src.leader.monitor import (
-    MonitorState, SubtaskStatus, init_monitor,
-    refresh_heartbeats, write_heartbeat, write_leader_heartbeat,
+    MonitorState, SubtaskStatus, init_monitor, monitor_loop,
+    write_heartbeat, write_leader_heartbeat,
 )
 from src.leader.task_planner import Subtask, TaskPlan, plan_task
+from src.mcp.server import MCPToolRegistry
 from src.memory.capability_store import record_task_result
 from src.memory.rag_engine import index_task_result, query as rag_query
 from src.memory.task_history import (
@@ -131,6 +133,8 @@ class Orchestrator:
         self._sanitize_result: SanitizeResult | None = None
         self._original_task: str = ""
         self._on_progress: ProgressCallback = None
+        self._mcp = MCPToolRegistry()
+        self._runtime_stats: dict[str, dict[str, float]] = {}
 
     def set_progress_callback(self, cb: ProgressCallback) -> None:
         self._on_progress = cb
@@ -174,6 +178,15 @@ class Orchestrator:
             self.state = TaskState.ANALYSIS
             await self._emit("state", {"state": self.state.value})
 
+            if not await self.leader.ping():
+                raise RuntimeError(
+                    f"Ollama 不可用：未连接 {self.cfg.leader.ollama_base_url}，或本地没有模型 "
+                    f"{self.cfg.leader.model!r}。\n"
+                    f"请先启动: ollama serve\n"
+                    f"再拉取: ollama pull {self.cfg.leader.model}\n"
+                    f"如显存不足，可改 config/config.yaml 中 leader.model 为较小模型(如 qwen2.5:7b)后重试。"
+                )
+
             profiles = load_models_profile()
             user_profile = load_user_profile()
             user_pref = user_profile.get("natural_language_summary", "")
@@ -190,6 +203,7 @@ class Orchestrator:
                 worker_profiles=profiles,
                 user_preferences=user_pref,
                 rag_context=rag_context,
+                tool_context=self._mcp.get_tools_description(),
             )
 
             await self._emit("plan", {"analysis": self.plan.analysis, "subtask_count": len(self.plan.subtasks)})
@@ -254,6 +268,7 @@ class Orchestrator:
                 self._original_task,
                 self.plan.subtasks,
                 self.reviews,
+                tool_context=self._mcp.get_tools_description(),
             )
 
             # Restore sensitive info in final output
@@ -263,10 +278,9 @@ class Orchestrator:
                     self._sanitize_result.placeholder_map,
                 )
 
-            # -- Record to memory --
-            await self._record_to_memory()
-
             self.state = TaskState.DELIVERED
+            # -- Record to memory (after final state is known) --
+            await self._record_to_memory()
             await self._emit("state", {"state": self.state.value, "cost": self.cost_tracker.to_dict()})
 
             return self.integration
@@ -282,29 +296,44 @@ class Orchestrator:
         monitor_state: MonitorState,
     ) -> None:
         """Execute subtasks respecting dependency order."""
-        completed_ids: set[str] = set()
-        pending = list(subtasks)
+        completed_ids: set[str] = {s.id for s in subtasks if s.status == "completed"}
+        pending = [s for s in subtasks if s.status != "completed"]
 
-        while pending:
-            ready = [
-                s for s in pending
-                if all(dep in completed_ids for dep in s.depends_on)
-            ]
-            if not ready:
-                if pending:
-                    ready = [pending[0]]
-                else:
-                    break
+        async def _on_timeout(sid: str, _st: SubtaskStatus) -> None:
+            await self._emit("subtask_error", {
+                "subtask_id": sid,
+                "error": "heartbeat timeout detected by monitor",
+                "retry": _st.retries,
+            })
 
-            # Launch heartbeat writer for leader
-            write_leader_heartbeat(self.session_id)
+        monitor_task = asyncio.create_task(monitor_loop(monitor_state, on_timeout=_on_timeout))
 
-            tasks = [self._execute_single(s, monitor_state) for s in ready]
-            await asyncio.gather(*tasks)
+        try:
+            while pending:
+                ready = [
+                    s for s in pending
+                    if all(dep in completed_ids for dep in s.depends_on)
+                ]
+                if not ready:
+                    if pending:
+                        ready = [pending[0]]
+                    else:
+                        break
 
-            for s in ready:
-                completed_ids.add(s.id)
-                pending.remove(s)
+                # Launch heartbeat writer for leader
+                write_leader_heartbeat(self.session_id)
+
+                tasks = [self._execute_single(s, monitor_state) for s in ready]
+                await asyncio.gather(*tasks)
+
+                for s in ready:
+                    if s.status == "completed":
+                        completed_ids.add(s.id)
+                    pending.remove(s)
+        finally:
+            monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
 
     async def _execute_single(
         self,
@@ -330,7 +359,14 @@ class Orchestrator:
 
         while retries <= max_retries:
             try:
-                write_heartbeat(self.session_id, subtask.id, {"model": model_name})
+                stop_heartbeat = asyncio.Event()
+
+                async def _heartbeat_loop() -> None:
+                    while not stop_heartbeat.is_set():
+                        write_heartbeat(self.session_id, subtask.id, {"model": model_name, "status": "running"})
+                        await asyncio.sleep(max(self.cfg.monitor.heartbeat_interval_s / 2, 1))
+
+                heartbeat_task = asyncio.create_task(_heartbeat_loop())
                 await self._emit("subtask_start", {
                     "subtask_id": subtask.id, "model": model_name, "retry": retries,
                 })
@@ -339,10 +375,19 @@ class Orchestrator:
                     worker.chat(messages=[{"role": "user", "content": prompt}]),
                     timeout=self.cfg.monitor.timeout_threshold_s,
                 )
+                stop_heartbeat.set()
+                with contextlib.suppress(asyncio.CancelledError):
+                    heartbeat_task.cancel()
+                    await heartbeat_task
 
                 write_heartbeat(self.session_id, subtask.id, {"status": "completed"})
                 subtask.result = resp.content
                 subtask.status = "completed"
+                self._runtime_stats[subtask.id] = {
+                    "tokens_used": float(resp.total_tokens),
+                    "elapsed_s": float(resp.elapsed_s),
+                    "cost_usd": float(resp.cost_usd or estimate_cost(resp.prompt_tokens, resp.completion_tokens, model_name)),
+                }
 
                 cost = resp.cost_usd or estimate_cost(resp.prompt_tokens, resp.completion_tokens, model_name)
                 self.cost_tracker.record(resp.prompt_tokens, resp.completion_tokens, cost)
@@ -361,6 +406,12 @@ class Orchestrator:
                 return
 
             except (asyncio.TimeoutError, Exception) as exc:
+                if 'stop_heartbeat' in locals():
+                    stop_heartbeat.set()
+                if 'heartbeat_task' in locals():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        heartbeat_task.cancel()
+                        await heartbeat_task
                 retries += 1
                 await self._emit("subtask_error", {
                     "subtask_id": subtask.id, "model": model_name,
@@ -408,7 +459,9 @@ class Orchestrator:
                 assigned_model=st.assigned_model,
                 status=st.status,
                 quality_score=quality,
-                tokens_used=st.estimated_tokens,
+                tokens_used=int(self._runtime_stats.get(st.id, {}).get("tokens_used", st.estimated_tokens)),
+                elapsed_s=float(self._runtime_stats.get(st.id, {}).get("elapsed_s", 0.0)),
+                cost_usd=float(self._runtime_stats.get(st.id, {}).get("cost_usd", 0.0)),
                 passed_review=1 if passed else 0,
                 result_summary=(st.result or "")[:500],
                 completed_at=datetime.datetime.utcnow() if st.status == "completed" else None,
@@ -420,9 +473,14 @@ class Orchestrator:
                 record_task_result(
                     st.assigned_model,
                     quality_score=quality,
-                    elapsed_s=0.0,
-                    tokens_used=st.estimated_tokens,
-                    cost_usd=0.0 if is_local else estimate_cost(st.estimated_tokens, st.estimated_tokens, st.assigned_model),
+                    elapsed_s=float(self._runtime_stats.get(st.id, {}).get("elapsed_s", 0.0)),
+                    tokens_used=int(self._runtime_stats.get(st.id, {}).get("tokens_used", st.estimated_tokens)),
+                    cost_usd=0.0 if is_local else float(
+                        self._runtime_stats.get(st.id, {}).get(
+                            "cost_usd",
+                            estimate_cost(st.estimated_tokens, st.estimated_tokens, st.assigned_model),
+                        )
+                    ),
                     passed_review=passed,
                     failed=(st.status == "failed"),
                     is_local=is_local,
@@ -440,3 +498,86 @@ class Orchestrator:
             from src.config import save_config
             save_config(self.cfg)
         await self._emit("leader_switch", {"new_model": new_model, "persisted": persist})
+
+    @classmethod
+    def from_snapshot(cls, session_id: str, cfg: AppConfig | None = None) -> "Orchestrator":
+        """Rebuild an orchestrator from saved session snapshot."""
+        snap = SessionSnapshot.load(session_id)
+        if not snap:
+            raise ValueError(f"Session snapshot not found: {session_id}")
+
+        orch = cls(cfg=cfg)
+        orch.session_id = snap.session_id
+        orch._original_task = snap.original_task
+        orch.state = TaskState(snap.state) if snap.state in TaskState._value2member_map_ else TaskState.RECEIVED
+        orch.cost_tracker.spent_usd = snap.cost_used_usd
+
+        if snap.placeholder_map:
+            orch._sanitize_result = SanitizeResult(
+                original=snap.original_task,
+                sanitized=snap.sanitized_task,
+                spans=[],
+                placeholder_map=snap.placeholder_map,
+                has_sensitive=True,
+            )
+
+        subtasks: list[Subtask] = []
+        for s in snap.subtasks:
+            subtasks.append(Subtask(
+                id=s.get("id", ""),
+                title=s.get("title", "未命名子任务"),
+                description=s.get("description", ""),
+                importance=int(s.get("importance", 5)),
+                required_skills=s.get("required_skills", []),
+                depends_on=s.get("depends_on", []),
+                estimated_tokens=int(s.get("estimated_tokens", 2000)),
+                assigned_model=s.get("assigned_model"),
+                status=s.get("status", "pending"),
+                result=s.get("result"),
+            ))
+        orch.plan = TaskPlan(analysis="Resumed from saved snapshot", subtasks=subtasks, raw_response="")
+        return orch
+
+    async def resume(self) -> IntegrationResult:
+        """Resume current session from restored state."""
+        if not self.plan:
+            raise RuntimeError("No task plan in snapshot; cannot resume")
+
+        self.state = TaskState.EXECUTING
+        await self._emit("state", {"state": self.state.value, "resumed": True})
+        monitor_state = init_monitor(
+            task_id=self.session_id,
+            subtask_models={s.id: s.assigned_model or "unknown" for s in self.plan.subtasks},
+            timeout_s=self.cfg.monitor.timeout_threshold_s,
+            max_retries=self.cfg.monitor.max_retries,
+            heartbeat_interval_s=self.cfg.monitor.heartbeat_interval_s,
+        )
+        await self._execute_subtasks(self.plan.subtasks, monitor_state)
+
+        self.state = TaskState.REVIEWING
+        await self._emit("state", {"state": self.state.value})
+        self.reviews = []
+        for st in self.plan.subtasks:
+            if st.status == "completed":
+                rev = await review_subtask(self.leader, st)
+                self.reviews.append(rev)
+                await self._emit("review", {"subtask_id": st.id, "score": rev.quality_score, "passed": rev.passed})
+
+        self.state = TaskState.INTEGRATING
+        await self._emit("state", {"state": self.state.value})
+        self.integration = await integrate_results(
+            self.leader,
+            self._original_task,
+            self.plan.subtasks,
+            self.reviews,
+            tool_context=self._mcp.get_tools_description(),
+        )
+        if self._sanitize_result and self._sanitize_result.has_sensitive:
+            self.integration.final_output = self.privacy_guard.restore(
+                self.integration.final_output,
+                self._sanitize_result.placeholder_map,
+            )
+        self.state = TaskState.DELIVERED
+        await self._record_to_memory()
+        await self._emit("state", {"state": self.state.value, "cost": self.cost_tracker.to_dict()})
+        return self.integration

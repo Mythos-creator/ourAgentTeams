@@ -51,6 +51,9 @@ INTEGRATE_PROMPT = """\
 ## 原始任务
 {original_task}
 
+## 可用工具（MCP）
+{tool_context}
+
 ## 子任务结果
 {subtask_results}
 
@@ -134,6 +137,7 @@ async def integrate_results(
     original_task: str,
     subtasks: list[Subtask],
     reviews: list[ReviewResult],
+    tool_context: str = "",
 ) -> IntegrationResult:
     """Merge all subtask results into a final deliverable."""
     parts: list[str] = []
@@ -144,6 +148,7 @@ async def integrate_results(
 
     prompt = INTEGRATE_PROMPT.format(
         original_task=original_task,
+        tool_context=tool_context or "当前未提供可调用工具",
         subtask_results="\n\n".join(parts),
     )
 
