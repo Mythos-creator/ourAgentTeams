@@ -39,6 +39,7 @@ elif command -v conda &>/dev/null; then
     else
         conda env create -f environment.yml
     fi
+    conda run -n ouragentteams pip install -e .
     PYTHON="conda run -n ouragentteams python"
     ACTIVATE_CMD="conda activate ouragentteams"
     METHOD="conda"
@@ -58,6 +59,7 @@ else
     source .venv/bin/activate
     pip install --upgrade pip -q
     pip install -r requirements.txt
+    pip install -e .
     PYTHON="$(pwd)/.venv/bin/python"
     ACTIVATE_CMD="source .venv/bin/activate"
     METHOD="venv"
@@ -88,8 +90,9 @@ echo -e "下一步，激活环境："
 echo -e "  ${CYAN}${ACTIVATE_CMD}${RESET}"
 echo ""
 echo -e "然后运行项目："
-echo -e "  ${CYAN}python -m src.cli.main --help${RESET}"
-echo -e "  ${CYAN}python -m src.cli.main start \"你的任务\"${RESET}"
+echo -e "  ${CYAN}ouragentteams --help${RESET}"
+echo -e "  ${CYAN}ouragentteams${RESET}  # 进入交互模式"
+echo -e "  ${CYAN}ouragentteams start \"你的任务\"${RESET}"
 echo ""
 echo -e "${YELLOW}提示：${RESET} Ollama 需要在宿主机提前运行，并拉取 Leader 模型："
 echo -e "  ${CYAN}ollama pull qwen2.5:7b${RESET}   # 轻量 Leader（推荐入门）"

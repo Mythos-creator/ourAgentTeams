@@ -79,42 +79,91 @@ ollama pull qwen2.5:7b    # example; pick one that fits your GPU/RAM
 
 After install, the `ouragentteams` command is on your `PATH` (same environment where you ran `pip install -e .`).
 
-### Interactive (recommended)
+### Step 1: Start interactive session
 
 ```bash
 ouragentteams
 ```
 
-- **Single mode (default)** — type messages; the leader routes to a suitable local model per turn.  
-- **Team mode** — e.g. `/team build a small REST API with health check` — plan with the leader, adjust the plan, then run full multi-model execution.  
-- Commands like `/help`, `/mode`, `/clear`, `/exit` are shown in the session.
+- **Single mode (default)** — normal chat; leader routes each turn to a suitable model.
+- **Team mode** — type `/team <task>` for plan + multi-worker execution.
+- In-session helpers: `/help`, `/mode`, `/clear`, `/exit`.
 
-Same as: `ouragentteams chat`.
+Equivalent command:
 
-### One command, one task
+```bash
+ouragentteams chat
+```
+
+### Step 2: Run one-shot tasks (non-interactive)
 
 ```bash
 ouragentteams start "Your task in natural language"
 ```
 
-Useful for automation or when you are not in a TTY.
+Useful for scripts/automation or non-TTY environments.
 
-### Cloud models (optional)
+### Step 3: Manage Leader model
 
-Add API-backed workers so the leader can assign subtasks to OpenAI, Anthropic, Google, etc.:
+List local models (from Ollama):
 
 ```bash
-ouragentteams config add-worker --model <model-id> --api-key <key> --strengths "coding,analysis"
+ouragentteams leader list
 ```
 
-Or set keys in `.env` and reference them in `config/config.yaml`. See **DEVELOPER_GUIDE.md** for providers and examples.
-
-### Other commands
+Set Leader model and persist to config:
 
 ```bash
-ouragentteams --help          # all subcommands
-ouragentteams leader list     # local Ollama models
-ouragentteams report          # model performance summary
+ouragentteams leader use qwen3.5:4b
+```
+
+Quick switch via option-style command:
+
+```bash
+ouragentteams leader switch --model qwen3.5:4b
+ouragentteams leader switch --model qwen3.5:4b --persist
+```
+
+### Step 4: Manage workers (CRUD-style)
+
+List workers:
+
+```bash
+ouragentteams config list-workers
+```
+
+Add a local worker:
+
+```bash
+ouragentteams config add-worker --model gemma4:e2b --local
+```
+
+Add an API worker:
+
+```bash
+ouragentteams config add-worker --model gpt-4o --api-key <key> --strengths "coding,analysis"
+```
+
+Remove a worker:
+
+```bash
+ouragentteams config remove-worker --model gpt-4o
+```
+
+> Update worker config: remove then add again with new fields (there is no dedicated `update` command yet).
+
+Verify connectivity for leader + all workers:
+
+```bash
+ouragentteams config verify
+```
+
+### Step 5: Useful ops
+
+```bash
+ouragentteams reload    # reload config.yaml
+ouragentteams report    # model performance summary
+ouragentteams --help    # all commands
 ```
 
 ---

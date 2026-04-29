@@ -1,5 +1,7 @@
 # ourAgentTeams
 
+My blog : https://aclitice.com
+
 在终端里**拉起一支本地 AI 小队**：由 Leader 规划任务，把子任务分发给不同模型（本机或云端 API），最后**合并成一份结果**。  
 [English](README.md) | **中文**
 
@@ -74,42 +76,91 @@ ollama pull qwen2.5:7b    # 示例，按自己显存/内存选
 
 安装 `ouragentteams` 命令后（在安装了 `pip install -e .` 的同一 Python 环境）：
 
-### 交互（推荐）
+### 第 1 步：启动交互会话（推荐）
 
 ```bash
 ouragentteams
 ```
 
-- **Single（默认）** — 直接输入；Leader 为每条话选较合适的本机模型。  
-- **Team** — 如输入 `/team 用 FastAPI 写带健康检查的小服务`：先**多轮改计划**，再**全队执行**子任务。  
-- 会话内可用 `/help`、`/mode`、`/clear`、`/exit` 等。
+- **Single（默认）**：常规对话；Leader 会为每条输入路由到较合适的模型。  
+- **Team**：输入 `/team <任务>`，先定计划，再多工人协作执行。  
+- 会话内常用：`/help`、`/mode`、`/clear`、`/exit`。
 
-与 `ouragentteams chat` 相同。
+等价命令：
 
-### 非交互、一句话任务
+```bash
+ouragentteams chat
+```
+
+### 第 2 步：非交互执行（一次性任务）
 
 ```bash
 ouragentteams start "用自然语言描述你的任务"
 ```
 
-适合脚本、自动化、无终端界面时。
+适合脚本、自动化、非 TTY 环境。
 
-### 云端 API（可选）
+### 第 3 步：管理 Leader 模型
 
-为子任务增加云侧工人，例如：
+查看本机 Ollama 已拉取模型：
 
 ```bash
-ouragentteams config add-worker --model <模型名> --api-key <密钥> --strengths "coding,analysis"
+ouragentteams leader list
 ```
 
-或在 `.env` 配环境变量、在 `config/config.yaml` 里引用。各厂商示例见 **DEVELOPER_GUIDE.md**。
-
-### 其它常用命令
+切换 Leader 并持久化到配置：
 
 ```bash
-ouragentteams --help          # 全部子命令
-ouragentteams leader list     # 本机 Ollama 已拉取模型
-ouragentteams report          # 模型表现汇总
+ouragentteams leader use qwen3.5:4b
+```
+
+`switch` 方式（可选持久化）：
+
+```bash
+ouragentteams leader switch --model qwen3.5:4b
+ouragentteams leader switch --model qwen3.5:4b --persist
+```
+
+### 第 4 步：管理 Worker（增删查，改=删后重加）
+
+查看 worker 列表：
+
+```bash
+ouragentteams config list-workers
+```
+
+添加本地 worker：
+
+```bash
+ouragentteams config add-worker --model gemma4:e2b --local
+```
+
+添加云端 API worker：
+
+```bash
+ouragentteams config add-worker --model gpt-4o --api-key <密钥> --strengths "coding,analysis"
+```
+
+删除 worker：
+
+```bash
+ouragentteams config remove-worker --model gpt-4o
+```
+
+> 当前没有单独 `update` 命令；需要修改时，先删再按新参数添加。
+
+连通性自检（Leader + 全部 workers）：
+
+```bash
+ouragentteams config verify
+```
+
+### 第 5 步：常用运维命令
+
+```bash
+ouragentteams reload    # 重新加载 config.yaml
+ouragentteams report    # 模型表现汇总
+ouragentteams --help    # 查看全部命令
 ```
 
 ---

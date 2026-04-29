@@ -155,8 +155,17 @@ class Orchestrator:
             placeholder_map=self._sanitize_result.placeholder_map if self._sanitize_result else {},
         )
 
-    async def run(self, task_description: str) -> IntegrationResult:
-        """Execute the complete lifecycle for a user task."""
+    async def run(
+        self,
+        task_description: str,
+        *,
+        precomputed_plan: TaskPlan | None = None,
+    ) -> IntegrationResult:
+        """Execute the complete lifecycle for a user task.
+
+        If precomputed_plan is provided, planning output is reused instead of
+        generating a brand new plan from the Leader.
+        """
         self._original_task = task_description
 
         try:
@@ -197,14 +206,17 @@ class Orchestrator:
             self.state = TaskState.PLANNING
             await self._emit("state", {"state": self.state.value})
 
-            self.plan = await plan_task(
-                self.leader,
-                task_for_workers,
-                worker_profiles=profiles,
-                user_preferences=user_pref,
-                rag_context=rag_context,
-                tool_context=self._mcp.get_tools_description(),
-            )
+            if precomputed_plan is not None:
+                self.plan = precomputed_plan
+            else:
+                self.plan = await plan_task(
+                    self.leader,
+                    task_for_workers,
+                    worker_profiles=profiles,
+                    user_preferences=user_pref,
+                    rag_context=rag_context,
+                    tool_context=self._mcp.get_tools_description(),
+                )
 
             await self._emit("plan", {"analysis": self.plan.analysis, "subtask_count": len(self.plan.subtasks)})
 

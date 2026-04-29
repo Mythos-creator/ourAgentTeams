@@ -30,6 +30,7 @@ from src.leader.query_router import classify, route, ClassifyResult
 from src.leader.task_planner import Subtask, TaskPlan, plan_task
 from src.memory.rag_engine import query as rag_query
 from src.mcp.server import MCPToolRegistry
+from src.models.api_model import APIModelWorker
 from src.models.local_model import OllamaWorker
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -123,10 +124,16 @@ def _handle_single(
     chosen_worker = None
     if rr.worker and not rr.is_fallback:
         if rr.worker.model != leader.model:
-            chosen_worker = OllamaWorker(
-                model=rr.worker.model,
-                base_url=cfg.leader.ollama_base_url,
-            ) if rr.worker.provider == "ollama" else None
+            if rr.worker.provider == "ollama":
+                chosen_worker = OllamaWorker(
+                    model=rr.worker.model,
+                    base_url=cfg.leader.ollama_base_url,
+                )
+            else:
+                chosen_worker = APIModelWorker(
+                    model=rr.worker.model,
+                    api_key=rr.worker.api_key,
+                )
             if chosen_worker:
                 ok = run_coro(chosen_worker.ping())
                 if not ok:
@@ -325,7 +332,7 @@ def _handle_team(
     )
 
     try:
-        result = _run(orch.run(task_with_ctx))
+        result = _run(orch.run(task_with_ctx, precomputed_plan=plan))
     except Exception as exc:
         console.print(f"\n[red bold]执行失败:[/red bold] {exc}")
         return
@@ -368,8 +375,6 @@ def run_interactive() -> None:
         raise typer.Exit(1)
 
     transcript: list[dict[str, str]] = []
-    mode = "single"
-
     workers_local = ", ".join(w.model for w in cfg.workers_local) or "无"
     workers_api = ", ".join(w.model for w in cfg.workers_api) or "无"
 
@@ -383,11 +388,7 @@ def run_interactive() -> None:
     console.print(Panel(banner, title="交互模式", border_style="blue"))
 
     while True:
-        prompt_label = (
-            "[bold cyan]single[/bold cyan]"
-            if mode == "single"
-            else "[bold magenta]team[/bold magenta]"
-        )
+        prompt_label = "[bold cyan]single[/bold cyan]"
         try:
             line = Prompt.ask(f"\n{prompt_label}", default="").strip()
         except (EOFError, KeyboardInterrupt):
@@ -428,8 +429,7 @@ def run_interactive() -> None:
             continue
 
         if line in ("/mode",):
-            label = "[cyan]Single[/cyan]" if mode == "single" else "[magenta]Team[/magenta]"
-            console.print(f"当前模式: {label}")
+            console.print("当前模式: [cyan]Single[/cyan]（输入 /team 进入 Team 流程）")
             continue
 
         if line in ("/clear", "/reset"):
@@ -438,14 +438,12 @@ def run_interactive() -> None:
             continue
 
         if line in ("/single",):
-            mode = "single"
-            console.print("[cyan]已切换到 Single 模式。[/cyan]")
+            console.print("[cyan]当前已在 Single 模式。[/cyan]")
             continue
 
         # ── /team trigger ──
         team_m = re.match(r"^/team\s*(.*)", line, re.DOTALL | re.IGNORECASE)
         if team_m:
-            mode = "single"  # will return to single after team completes
             _handle_team(
                 team_m.group(1).strip(),
                 transcript,
@@ -456,9 +454,4 @@ def run_interactive() -> None:
             )
             continue
 
-        # ── Mode dispatch ──
-        if mode == "single":
-            _handle_single(line, transcript, cfg, leader, _run)
-        else:
-            console.print("[yellow]Team 模式仅通过 /team 命令进入。[/yellow]")
-            _handle_single(line, transcript, cfg, leader, _run)
+        _handle_single(line, transcript, cfg, leader, _run)

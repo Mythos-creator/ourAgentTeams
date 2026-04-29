@@ -56,7 +56,7 @@ def select_model_for_subtask(
 
     if tier == "local":
         for w in cfg.workers_local:
-            score = _skill_overlap(subtask.required_skills, []) + 1.0
+            score = _skill_overlap(subtask.required_skills, w.strengths) + 1.0
             candidates.append((w, score))
     elif tier == "best":
         for w in cfg.workers_api:
@@ -67,9 +67,9 @@ def select_model_for_subtask(
             score = overlap * 2 + q
             candidates.append((w, score))
         for w in cfg.workers_local:
-            overlap = _skill_overlap(subtask.required_skills, [])
+            overlap = _skill_overlap(subtask.required_skills, w.strengths)
             q = _quality_score(w.model)
-            candidates.append((w, q * 0.5))
+            candidates.append((w, overlap * 1.0 + q * 0.5))
     else:  # mid
         for w in cfg.workers_api:
             if _is_disqualified(w.model):
@@ -82,8 +82,9 @@ def select_model_for_subtask(
             score = overlap * 2 + efficiency * 0.1
             candidates.append((w, score))
         for w in cfg.workers_local:
+            overlap = _skill_overlap(subtask.required_skills, w.strengths)
             q = _quality_score(w.model)
-            candidates.append((w, q * 0.8))
+            candidates.append((w, overlap * 1.2 + q * 0.8))
 
     if not candidates:
         if cfg.workers_local:

@@ -268,11 +268,12 @@ def schedule(
 
 @app.command()
 def reload():
-    """Reload config.yaml without restarting."""
+    """Reload config.yaml for this invocation and show current values."""
     cfg = load_config()
     console.print("[green]Configuration reloaded successfully.[/green]")
     console.print(f"Leader: [cyan]{cfg.leader.model}[/cyan]")
     console.print(f"Workers: {len(cfg.workers_local)} local, {len(cfg.workers_api)} API")
+    console.print("[dim]Note: already-running interactive sessions need restart to pick up changes.[/dim]")
 
 
 # ── Leader commands ──────────────────────────────────────
@@ -288,7 +289,7 @@ def leader_list():
         return
     console.print("[bold]Available local models:[/bold]")
     for m in models:
-        marker = " [green]<- current leader[/green]" if cfg.leader.model in m else ""
+        marker = " [green]<- current leader[/green]" if cfg.leader.model == m else ""
         console.print(f"  - [cyan]{m}[/cyan]{marker}")
 
 
