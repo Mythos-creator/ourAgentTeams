@@ -38,6 +38,7 @@ from src.leader.task_planner import Subtask, TaskPlan, plan_task
 from src.mcp.server import MCPToolRegistry
 from src.memory.capability_store import record_task_result
 from src.memory.rag_engine import index_task_result, query as rag_query
+from src.memory.user_pref_selector import select_user_preferences
 from src.memory.task_history import (
     SubtaskRecord, TaskRecord, save_subtask, save_task,
 )
@@ -114,6 +115,35 @@ WORKER_PROMPT = """\
 1. 输出高质量、可直接使用的结果
 2. 如果是代码任务，输出可运行的完整代码
 3. 如果是文本任务，输出结构清晰的内容
+"""
+
+USER_PROFILE_UPDATE_PROMPT = """\
+你是用户偏好学习助手。请根据最近一次完整任务的上下文，更新用户偏好摘要。
+
+## 现有用户偏好摘要
+{current_summary}
+
+## 最近任务
+{task_description}
+
+## 最近任务交付结果（截断）
+{final_output_excerpt}
+
+## 最近任务质量均分
+{quality_avg}
+
+## 输出要求
+请输出严格 JSON，不要附加其他文字：
+```json
+{{
+  "natural_language_summary": "更新后的偏好摘要（2-6句，关注可执行偏好）",
+  "interaction_history_summary": "本次任务体现出的偏好变化（1-3句）"
+}}
+```
+约束：
+1) 不要臆造身份信息或隐私信息
+2) 只保留可指导后续任务执行的偏好
+3) 若信息不足，可在原摘要基础上小幅优化表达
 """
 
 
@@ -198,7 +228,11 @@ class Orchestrator:
 
             profiles = load_models_profile()
             user_profile = load_user_profile()
-            user_pref = user_profile.get("natural_language_summary", "")
+            user_pref = await select_user_preferences(
+                self.leader,
+                task_for_workers,
+                user_profile,
+            )
 
             rag_results = rag_query(task_for_workers, n_results=3)
             rag_context = "\n".join(r["text"] for r in rag_results) if rag_results else ""
@@ -500,6 +534,46 @@ class Orchestrator:
 
             if st.status == "completed" and st.result:
                 index_task_result(st.id, st.description, st.result[:300], st.assigned_model or "unknown")
+
+        await self._auto_update_user_profile()
+
+    async def _auto_update_user_profile(self) -> None:
+        """Use Leader to auto-summarize user preferences after each completed task."""
+        if not self.integration or self.state != TaskState.DELIVERED:
+            return
+
+        profile = load_user_profile()
+        current_summary = profile.get("natural_language_summary", "") or "（空）"
+        final_output_excerpt = (self.integration.final_output or "")[:1800]
+        prompt = USER_PROFILE_UPDATE_PROMPT.format(
+            current_summary=current_summary,
+            task_description=self._original_task[:1200],
+            final_output_excerpt=final_output_excerpt,
+            quality_avg=self.integration.total_quality_avg,
+        )
+
+        try:
+            resp = await self.leader.chat(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=700,
+            )
+            data = json.loads(resp.content.strip().split("```json")[-1].split("```")[0].strip()) \
+                if "```" in resp.content else json.loads(resp.content.strip())
+        except Exception:
+            return
+
+        new_summary = str(data.get("natural_language_summary", "")).strip()
+        history_summary = str(data.get("interaction_history_summary", "")).strip()
+        if not new_summary:
+            return
+
+        profile["natural_language_summary"] = new_summary[:4000]
+        if history_summary:
+            profile["interaction_history_summary"] = history_summary[:2000]
+        profile["last_updated"] = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        profile["update_count"] = int(profile.get("update_count", 0)) + 1
+        save_user_profile(profile)
 
     async def switch_leader(self, new_model: str, persist: bool = False) -> None:
         """Hot-switch the Leader model mid-session."""

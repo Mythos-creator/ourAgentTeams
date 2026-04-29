@@ -29,6 +29,7 @@ from src.leader.orchestrator import Orchestrator
 from src.leader.query_router import classify, route, ClassifyResult
 from src.leader.task_planner import Subtask, TaskPlan, plan_task
 from src.memory.rag_engine import query as rag_query
+from src.memory.user_pref_selector import select_user_preferences
 from src.mcp.server import MCPToolRegistry
 from src.models.api_model import APIModelWorker
 from src.models.local_model import OllamaWorker
@@ -197,13 +198,13 @@ def _handle_team(
 
     profiles = load_models_profile()
     user_profile = load_user_profile()
-    user_pref = user_profile.get("natural_language_summary", "")
     rag_results = rag_query(initial_task, n_results=3)
     rag_context = "\n".join(r["text"] for r in rag_results) if rag_results else ""
     mcp = MCPToolRegistry()
 
     ctx = _format_context(transcript)
     task_with_ctx = (ctx + "\n\n" + initial_task) if ctx else initial_task
+    user_pref = run_coro(select_user_preferences(leader, task_with_ctx, user_profile))
 
     with console.status("[bold green]Leader 规划中…", spinner="dots"):
         plan: TaskPlan = run_coro(plan_task(
