@@ -26,13 +26,16 @@ from src.config import (
     load_user_profile, save_user_profile, reload_config,
 )
 from src.cost.calculator import CostTracker, estimate_cost
+from src.leader.dependency_validator import (
+    validate_dependencies, get_ready_tasks, DependencyCycleError,
+)
 from src.leader.integrator import (
     IntegrationResult, ReviewResult, integrate_results, review_subtask,
 )
 from src.leader.model_selector import assign_models, get_fallback_worker
 from src.leader.monitor import (
     MonitorState, SubtaskStatus, init_monitor, monitor_loop,
-    write_heartbeat, write_leader_heartbeat,
+    write_heartbeat, write_leader_heartbeat, update_monitor_model,
 )
 from src.leader.task_planner import Subtask, TaskPlan, plan_task
 from src.mcp.server import MCPToolRegistry
@@ -57,6 +60,8 @@ class TaskState(str, Enum):
     REVIEWING = "reviewing"
     INTEGRATING = "integrating"
     DELIVERED = "delivered"
+    PARTIAL_SUCCESS = "partial_success"  # Some subtasks failed
+    TIMED_OUT = "timed_out"  # Task execution timed out
     FAILED = "failed"
 
 
@@ -252,6 +257,14 @@ class Orchestrator:
                     tool_context=self._mcp.get_tools_description(),
                 )
 
+            # Validate dependencies (catch circular deps early)
+            try:
+                validate_dependencies([s.to_dict() for s in self.plan.subtasks])
+            except DependencyCycleError as exc:
+                self.state = TaskState.FAILED
+                await self._emit("error", {"error": f"依赖关系错误：{str(exc)}"})
+                raise RuntimeError(f"Task planning produced invalid dependencies: {exc}")
+
             await self._emit("plan", {"analysis": self.plan.analysis, "subtask_count": len(self.plan.subtasks)})
 
             # -- Model assignment --
@@ -286,6 +299,9 @@ class Orchestrator:
             await self._emit("state", {"state": self.state.value})
 
             self.reviews = []
+            rework_count = 0
+            max_rework_attempts = 2
+            
             for st in self.plan.subtasks:
                 if st.status == "completed":
                     rev = await review_subtask(self.leader, st)
@@ -296,14 +312,32 @@ class Orchestrator:
                         "passed": rev.passed,
                     })
 
-                    # Re-execute if review fails
-                    if not rev.passed and st.assigned_model:
+                    # Re-execute if review fails (limited rework attempts)
+                    if not rev.passed and st.assigned_model and rework_count < max_rework_attempts:
                         await self._emit("rework", {"subtask_id": st.id, "reason": rev.suggestions})
                         st.status = "pending"
                         st.result = None
                         await self._execute_single(st, monitor_state)
+                        rework_count += 1
                         new_rev = await review_subtask(self.leader, st)
                         self.reviews.append(new_rev)
+
+            # Check for partial success or all failed
+            completed_count = len([s for s in self.plan.subtasks if s.status == "completed"])
+            failed_count = len([s for s in self.plan.subtasks if s.status == "failed"])
+            
+            if failed_count > 0 and completed_count > 0:
+                # Some succeeded, some failed
+                self.state = TaskState.PARTIAL_SUCCESS
+            elif failed_count == len(self.plan.subtasks):
+                # All failed
+                self.state = TaskState.FAILED
+                await self._emit("error", {
+                    "error": "All subtasks failed, cannot integrate results"
+                })
+                # Still save to memory for learning
+                await self._record_to_memory()
+                raise RuntimeError("All subtasks failed during execution")
 
             # -- Integration --
             self.state = TaskState.INTEGRATING
@@ -341,41 +375,79 @@ class Orchestrator:
         subtasks: list[Subtask],
         monitor_state: MonitorState,
     ) -> None:
-        """Execute subtasks respecting dependency order."""
+        """Execute subtasks respecting dependency order with improved logic.
+        
+        Key fixes:
+        1. Never force-execute tasks with unmet dependencies
+        2. Detect and handle circular dependencies early
+        3. Maintain proper task state transitions
+        """
         completed_ids: set[str] = {s.id for s in subtasks if s.status == "completed"}
         pending = [s for s in subtasks if s.status != "completed"]
+        failed_ids: set[str] = set()
 
-        async def _on_timeout(sid: str, _st: SubtaskStatus) -> None:
+        async def _on_timeout(sid: str, st: SubtaskStatus) -> None:
             await self._emit("subtask_error", {
                 "subtask_id": sid,
                 "error": "heartbeat timeout detected by monitor",
-                "retry": _st.retries,
+                "retry": st.retries,
             })
 
         monitor_task = asyncio.create_task(monitor_loop(monitor_state, on_timeout=_on_timeout))
 
         try:
+            deadline = time.time() + self.cfg.monitor.timeout_threshold_s * 2
+            
             while pending:
+                # Write leader heartbeat periodically
+                write_leader_heartbeat(self.session_id)
+                
+                # Get all ready tasks (all deps satisfied)
                 ready = [
                     s for s in pending
                     if all(dep in completed_ids for dep in s.depends_on)
                 ]
+
                 if not ready:
-                    if pending:
-                        ready = [pending[0]]
-                    else:
+                    # No tasks are ready: either waiting for deps or deadlock
+                    still_pending_count = len([s for s in pending if s.status == "pending"])
+                    if still_pending_count == len(pending):
+                        # All pending tasks have unmet deps - potential deadlock
+                        unmet_dep_tasks = [
+                            s.id for s in pending 
+                            if any(dep not in completed_ids and dep not in failed_ids 
+                                   for dep in s.depends_on)
+                        ]
+                        if unmet_dep_tasks:
+                            await self._emit("subtask_error", {
+                                "error": f"Circular or unmet dependencies detected: {unmet_dep_tasks}",
+                            })
+                            # Skip circular dependency tasks
+                            for s in pending[:]:
+                                if s.id in unmet_dep_tasks:
+                                    s.status = "failed"
+                                    failed_ids.add(s.id)
+                                    pending.remove(s)
+                            continue
+                    
+                    # Wait a bit for monitor to update states
+                    if time.time() > deadline:
                         break
+                    await asyncio.sleep(0.5)
+                    continue
 
-                # Launch heartbeat writer for leader
-                write_leader_heartbeat(self.session_id)
-
+                # Execute all ready tasks in parallel
                 tasks = [self._execute_single(s, monitor_state) for s in ready]
                 await asyncio.gather(*tasks)
 
+                # Update completion tracking
                 for s in ready:
                     if s.status == "completed":
                         completed_ids.add(s.id)
+                    elif s.status == "failed":
+                        failed_ids.add(s.id)
                     pending.remove(s)
+
         finally:
             monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -386,7 +458,13 @@ class Orchestrator:
         subtask: Subtask,
         monitor_state: MonitorState,
     ) -> None:
-        """Execute a single subtask with heartbeat and failover."""
+        """Execute a single subtask with heartbeat, failover, and proper monitoring.
+        
+        Key fixes:
+        1. Sync monitor state when failover happens
+        2. Record cost for all retries
+        3. Reset monitor status on retry
+        """
         model_name = subtask.assigned_model
         if not model_name:
             subtask.status = "failed"
@@ -467,36 +545,58 @@ class Orchestrator:
                 if retries > max_retries:
                     break
 
-                # Failover
+                # Failover: switch to alternative worker
                 fb = get_fallback_worker(model_name, subtask, self.cfg)
                 if fb:
                     model_name = fb.model
                     worker = _create_worker(model_name, self.cfg)
                     subtask.assigned_model = model_name
+                    
+                    # CRITICAL FIX: Update monitor state for new model
+                    if ms:
+                        ms.model = model_name
+                        ms.status = "running"
+                        ms.last_heartbeat = time.time()
+                        ms.retries = retries
+                    
                     await self._emit("failover", {
                         "subtask_id": subtask.id, "new_model": model_name,
                     })
+                else:
+                    # No fallback available
+                    break
 
         subtask.status = "failed"
         if ms:
             ms.status = "failed"
 
     async def _record_to_memory(self) -> None:
-        """Persist results to capability store, task history, and RAG."""
+        """Persist results to capability store, task history, and RAG.
+        
+        Key fix: Record BOTH successful and failed tasks for learning.
+        """
+        # Record task status: DELIVERED, PARTIAL_SUCCESS, or FAILED
+        final_status = "completed"
+        if self.state == TaskState.PARTIAL_SUCCESS:
+            final_status = "partial_success"
+        elif self.state in (TaskState.FAILED, TaskState.TIMED_OUT):
+            final_status = "failed"
+        
         task_record = TaskRecord(
             id=self.session_id,
             description=self._original_task[:500],
-            status="completed" if self.state == TaskState.DELIVERED else "failed",
+            status=final_status,
             completed_at=datetime.datetime.utcnow(),
             total_cost_usd=self.cost_tracker.spent_usd,
             leader_model=self.cfg.leader.model,
         )
         save_task(task_record)
 
+        # Record all subtasks, including failed ones
         for st in (self.plan.subtasks if self.plan else []):
             rev = next((r for r in self.reviews if r.subtask_id == st.id), None)
-            quality = rev.quality_score if rev else 5.0
-            passed = rev.passed if rev else True
+            quality = rev.quality_score if rev else (0.0 if st.status == "failed" else 5.0)
+            passed = rev.passed if rev else (False if st.status == "failed" else True)
 
             sub_record = SubtaskRecord(
                 id=st.id,
@@ -509,12 +609,13 @@ class Orchestrator:
                 elapsed_s=float(self._runtime_stats.get(st.id, {}).get("elapsed_s", 0.0)),
                 cost_usd=float(self._runtime_stats.get(st.id, {}).get("cost_usd", 0.0)),
                 passed_review=1 if passed else 0,
-                result_summary=(st.result or "")[:500],
+                result_summary=(st.result or "")[:500] if st.result else "",
                 completed_at=datetime.datetime.utcnow() if st.status == "completed" else None,
             )
             save_subtask(sub_record)
 
-            if st.assigned_model and st.status in ("completed", "failed"):
+            # Update capability store for both success and failure (important for learning)
+            if st.assigned_model:
                 is_local = any(w.model == st.assigned_model for w in self.cfg.workers_local)
                 record_task_result(
                     st.assigned_model,
@@ -530,12 +631,16 @@ class Orchestrator:
                     passed_review=passed,
                     failed=(st.status == "failed"),
                     is_local=is_local,
+                    strengths=st.required_skills,
                 )
 
+            # Index successful results to RAG (only completed tasks)
             if st.status == "completed" and st.result:
                 index_task_result(st.id, st.description, st.result[:300], st.assigned_model or "unknown")
 
-        await self._auto_update_user_profile()
+        # Update user profile (only if task delivered successfully)
+        if self.state == TaskState.DELIVERED:
+            await self._auto_update_user_profile()
 
     async def _auto_update_user_profile(self) -> None:
         """Use Leader to auto-summarize user preferences after each completed task."""

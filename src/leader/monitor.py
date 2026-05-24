@@ -86,6 +86,15 @@ def read_heartbeat(task_id: str, subtask_id: str) -> float:
         return 0.0
 
 
+def update_monitor_model(state: MonitorState, subtask_id: str, new_model: str) -> None:
+    """Update the model assignment in monitor state when failover happens.
+    
+    This ensures heartbeat monitoring stays in sync with the current worker.
+    """
+    if subtask_id in state.statuses:
+        state.statuses[subtask_id].model = new_model
+
+
 def write_leader_heartbeat(session_id: str) -> None:
     """Leader-level heartbeat for the Watchdog to monitor."""
     d = DATA_DIR / "sessions"
@@ -147,7 +156,10 @@ async def monitor_loop(
     on_complete: Callable[[], Awaitable[None]] | None = None,
     poll_interval: float | None = None,
 ) -> None:
-    """Async loop that polls heartbeats until all subtasks finish."""
+    """Async loop that polls heartbeats until all subtasks finish.
+    
+    Key improvement: On timeout, call on_timeout handler which triggers failover.
+    """
     interval = poll_interval or state.heartbeat_interval_s
 
     while not state.all_done:
@@ -161,6 +173,7 @@ async def monitor_loop(
             else:
                 st.status = "timeout"
                 st.retries += 1
+                # IMPORTANT: Call handler to trigger failover in orchestrator
                 if on_timeout:
                     await on_timeout(sid, st)
 

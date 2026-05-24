@@ -139,17 +139,26 @@ async def integrate_results(
     reviews: list[ReviewResult],
     tool_context: str = "",
 ) -> IntegrationResult:
-    """Merge all subtask results into a final deliverable."""
+    """Merge all subtask results into a final deliverable.
+    
+    Key improvement: Handle failed subtasks gracefully.
+    """
     parts: list[str] = []
+    
     for st in subtasks:
         review = next((r for r in reviews if r.subtask_id == st.id), None)
-        score_text = f" (质量分: {review.quality_score})" if review else ""
-        parts.append(f"### {st.title}{score_text}\n{st.result or '(无结果)'}")
+        
+        if st.status == "completed":
+            score_text = f" (质量分: {review.quality_score})" if review else ""
+            parts.append(f"### {st.title}{score_text}\n{st.result or '(无结果)'}")
+        elif st.status == "failed":
+            # Include failed tasks in report with explicit failure marker
+            parts.append(f"### {st.title} [失败]\n本子任务执行失败，未能完成。")
 
     prompt = INTEGRATE_PROMPT.format(
         original_task=original_task,
         tool_context=tool_context or "当前未提供可调用工具",
-        subtask_results="\n\n".join(parts),
+        subtask_results="\n\n".join(parts) if parts else "(没有完成的子任务)",
     )
 
     resp = await leader.chat(

@@ -1,8 +1,8 @@
 # ourAgentTeams
 
-My blog : https://aclitice.com
+My blog : [https://aclitice.com](https://aclitice.com)
 
-**Run a local AI “team” from your terminal** — a leader model plans work, other models (local or cloud) execute subtasks, and you get one merged result.  
+**Run a local AI “team” from your terminal**  
 [中文](README_CN.md) | **English**
 
 ---
@@ -31,8 +31,6 @@ The **leader** runs on your machine (via [Ollama](https://ollama.com)). You can 
 - **Privacy helpers** — scan for common secrets before sending text to external providers  
 - **Model memory & reports** — learn which models pay off; optional savings hints  
 - **Optional tools** — file / search / shell helpers in the workflow; **RAG** over past task text when enabled
-
-Details, architecture, and contribution notes: **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)**.
 
 ---
 
