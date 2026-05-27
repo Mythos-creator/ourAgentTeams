@@ -574,6 +574,7 @@ class Orchestrator:
         """Persist results to capability store, task history, and RAG.
         
         Key fix: Record BOTH successful and failed tasks for learning.
+        Privacy: Store sanitized version to avoid recording sensitive data.
         """
         # Record task status: DELIVERED, PARTIAL_SUCCESS, or FAILED
         final_status = "completed"
@@ -582,9 +583,16 @@ class Orchestrator:
         elif self.state in (TaskState.FAILED, TaskState.TIMED_OUT):
             final_status = "failed"
         
+        # Use sanitized task description if sensitive data was detected
+        stored_description = (
+            self._sanitize_result.sanitized[:500]
+            if self._sanitize_result and self._sanitize_result.has_sensitive
+            else self._original_task[:500]
+        )
+        
         task_record = TaskRecord(
             id=self.session_id,
-            description=self._original_task[:500],
+            description=stored_description,
             status=final_status,
             completed_at=datetime.datetime.utcnow(),
             total_cost_usd=self.cost_tracker.spent_usd,
@@ -598,10 +606,18 @@ class Orchestrator:
             quality = rev.quality_score if rev else (0.0 if st.status == "failed" else 5.0)
             passed = rev.passed if rev else (False if st.status == "failed" else True)
 
+            # Sanitize subtask description and result for privacy
+            sanitized_st_desc = st.description
+            sanitized_st_result = st.result or ""
+            
+            if self._sanitize_result and self._sanitize_result.has_sensitive:
+                sanitized_st_desc = self.privacy_guard.sanitize(st.description).sanitized
+                sanitized_st_result = self.privacy_guard.sanitize(st.result or "").sanitized
+
             sub_record = SubtaskRecord(
                 id=st.id,
                 task_id=self.session_id,
-                description=st.description[:500],
+                description=sanitized_st_desc[:500],
                 assigned_model=st.assigned_model,
                 status=st.status,
                 quality_score=quality,
@@ -609,7 +625,7 @@ class Orchestrator:
                 elapsed_s=float(self._runtime_stats.get(st.id, {}).get("elapsed_s", 0.0)),
                 cost_usd=float(self._runtime_stats.get(st.id, {}).get("cost_usd", 0.0)),
                 passed_review=1 if passed else 0,
-                result_summary=(st.result or "")[:500] if st.result else "",
+                result_summary=sanitized_st_result[:500] if st.result else "",
                 completed_at=datetime.datetime.utcnow() if st.status == "completed" else None,
             )
             save_subtask(sub_record)
@@ -634,25 +650,39 @@ class Orchestrator:
                     strengths=st.required_skills,
                 )
 
-            # Index successful results to RAG (only completed tasks)
+            # Index successful results to RAG (only completed tasks, using sanitized version)
             if st.status == "completed" and st.result:
-                index_task_result(st.id, st.description, st.result[:300], st.assigned_model or "unknown")
+                index_task_result(
+                    st.id, 
+                    sanitized_st_desc[:300],
+                    sanitized_st_result[:300],
+                    st.assigned_model or "unknown"
+                )
 
         # Update user profile (only if task delivered successfully)
         if self.state == TaskState.DELIVERED:
             await self._auto_update_user_profile()
 
     async def _auto_update_user_profile(self) -> None:
-        """Use Leader to auto-summarize user preferences after each completed task."""
+        """Use Leader to auto-summarize user preferences after each completed task.
+        Privacy: Use sanitized task description if sensitive data was present.
+        """
         if not self.integration or self.state != TaskState.DELIVERED:
             return
 
         profile = load_user_profile()
+        
+        # Use sanitized task for privacy
+        profile_task = (
+            self._sanitize_result.sanitized[:1200]
+            if self._sanitize_result and self._sanitize_result.has_sensitive
+            else self._original_task[:1200]
+        )
         current_summary = profile.get("natural_language_summary", "") or "（空）"
         final_output_excerpt = (self.integration.final_output or "")[:1800]
         prompt = USER_PROFILE_UPDATE_PROMPT.format(
             current_summary=current_summary,
-            task_description=self._original_task[:1200],
+            task_description=profile_task,
             final_output_excerpt=final_output_excerpt,
             quality_avg=self.integration.total_quality_avg,
         )

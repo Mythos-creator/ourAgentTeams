@@ -147,8 +147,9 @@ class MCPToolRegistry:
 
     def _run_command(self, command: str) -> str:
         try:
+            import shlex
             result = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
+                shlex.split(command), capture_output=True, text=True,
                 timeout=30, cwd=str(self._workspace),
             )
             output = result.stdout + result.stderr

@@ -63,6 +63,7 @@ class CostConfig:
 @dataclass
 class PrivacyConfig:
     enabled: bool = True
+    mode: str = "balanced"  # strict | balanced | disabled
     entities: list[str] = field(default_factory=lambda: [
         "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER",
         "CREDIT_CARD", "API_KEY", "PASSWORD",
@@ -190,7 +191,8 @@ def save_config(cfg: AppConfig, path: Path | None = None) -> None:
                     k: v
                     for k, v in {
                         "model": w.model,
-                        "api_key": w.api_key,
+                        "provider": w.provider,
+                        # API keys must be set via environment variables, never saved to config
                         "strengths": w.strengths or None,
                     }.items()
                     if v is not None

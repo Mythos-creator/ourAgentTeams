@@ -30,6 +30,7 @@ cost:
   importance_threshold_best: 8
 privacy:
   enabled: true
+  mode: "balanced"  # strict: sanitize all storage | balanced: sanitize RAG+cloud | disabled: no sanitization
   entities:
   - PERSON
   - EMAIL_ADDRESS
