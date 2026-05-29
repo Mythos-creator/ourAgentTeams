@@ -50,6 +50,7 @@ class AgentInstance:
     temperature_override: float | None = None
     max_tokens_override: int | None = None
     skills_override: list[str] | None = None
+    allowed_tools: list[str] | None = None  # MCP 工具白名单；None=全开，[]=全禁
     tags: dict[str, str] = field(default_factory=dict)  # 自由元数据，便于路由/调试
 
     # 运行时状态（不可序列化字段）
@@ -213,6 +214,7 @@ class AgentInstance:
             "max_tokens": self.max_tokens,
             "completed": self.completed_count,
             "errors": self.error_count,
+            "allowed_tools": list(self.allowed_tools) if self.allowed_tools is not None else None,
             "tags": dict(self.tags),
         }
 

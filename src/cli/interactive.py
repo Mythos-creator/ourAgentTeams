@@ -24,15 +24,21 @@ from rich.prompt import Prompt
 
 from src.cli.coro import run_coro
 from src.cli.display import console, subtask_tree
+from src.cli.single_runner import run_single_safely
+from src.cli.transcript import cap_transcript_keep_system
 from src.config import AppConfig, load_config, load_models_profile, load_user_profile
+from src.cost.budget_guard import add_monthly_spent
 from src.leader.orchestrator import Orchestrator
 from src.leader.query_router import classify, route, ClassifyResult
 from src.leader.task_planner import Subtask, TaskPlan, plan_task
 from src.memory.rag_engine import query as rag_query
 from src.memory.user_pref_selector import select_user_preferences
+from src.mcp.scoped_registry import ScopedToolRegistry
 from src.mcp.server import MCPToolRegistry
 from src.models.api_model import APIModelWorker
+from src.models.factory import create_worker_from_entry
 from src.models.local_model import OllamaWorker
+from src.models.retry import RetryingWorker
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,8 +53,9 @@ SINGLE_SYSTEM = """\
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _cap_transcript(msgs: list[dict[str, str]]) -> None:
-    while len(msgs) > _MAX_TURNS * 2:
-        del msgs[0:2]
+    """Trim in place, always preserving system messages."""
+    capped = cap_transcript_keep_system(msgs, max_user_assistant_pairs=_MAX_TURNS)
+    msgs[:] = capped
 
 
 def _format_context(transcript: list[dict[str, str]]) -> str:
@@ -110,12 +117,14 @@ def _handle_single(
 
     if cr.needs_tools:
         mcp = MCPToolRegistry()
+        # Single 模式默认不限工具范围；如需 per-agent 限定，可传入 allowed=...
+        scoped = ScopedToolRegistry(mcp, allowed=None)
         rag_results = rag_query(line, n_results=3)
         rag_text = "\n".join(r["text"] for r in rag_results) if rag_results else ""
         extra = ""
         if rag_text:
             extra += f"\n\n【RAG 参考资料】\n{rag_text}"
-        extra += f"\n\n{mcp.get_tools_description()}"
+        extra += f"\n\n{scoped.get_tools_description()}"
         messages[0]["content"] += extra
 
     for m in transcript:
@@ -125,33 +134,40 @@ def _handle_single(
     chosen_worker = None
     if rr.worker and not rr.is_fallback:
         if rr.worker.model != leader.model:
-            if rr.worker.provider == "ollama":
-                chosen_worker = OllamaWorker(
-                    model=rr.worker.model,
-                    base_url=cfg.leader.ollama_base_url,
+            chosen_worker = create_worker_from_entry(rr.worker, cfg)
+            # 远端 worker 自动套上重试包装，抗住 429/timeout/5xx
+            if isinstance(chosen_worker, APIModelWorker):
+                chosen_worker = RetryingWorker(chosen_worker)
+            ok = run_coro(chosen_worker.ping())
+            if not ok:
+                console.print(
+                    f"[yellow]路由模型 {rr.worker.model} 不可用，Leader 接管回答。[/yellow]"
                 )
-            else:
-                chosen_worker = APIModelWorker(
-                    model=rr.worker.model,
-                    api_key=rr.worker.api_key,
-                )
-            if chosen_worker:
-                ok = run_coro(chosen_worker.ping())
-                if not ok:
-                    console.print(
-                        f"[yellow]路由模型 {rr.worker.model} 不可用，Leader 接管回答。[/yellow]"
-                    )
-                    chosen_worker = None
+                chosen_worker = None
 
     worker_to_use = chosen_worker or leader
     model_label = worker_to_use.model
 
     with console.status(f"[bold green]{model_label} 思考中…", spinner="dots"):
         try:
-            resp = run_coro(worker_to_use.chat(messages))
+            outcome = run_coro(run_single_safely(worker_to_use, messages, cfg=cfg))
+            resp = outcome.response
         except Exception as exc:
             console.print(f"[red]调用 {model_label} 失败: {exc}[/red]")
             return
+
+    if outcome.sanitized:
+        console.print(
+            f"[dim]( 已对发往云端的 {outcome.entity_count} 处敏感内容做脱敏并回填 )[/dim]"
+        )
+
+    # Track monthly spend for budget_guard (cloud calls only)
+    cost = float(getattr(resp, "cost_usd", 0.0) or 0.0)
+    if cost > 0:
+        try:
+            add_monthly_spent(cost)
+        except Exception:
+            pass
 
     text = (resp.content or "").strip()
 

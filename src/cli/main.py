@@ -46,6 +46,9 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(report_app, name="report")
 app.add_typer(sessions_app, name="sessions")
 
+agents_app = typer.Typer(help="Inspect and validate agent definitions in agents/")
+app.add_typer(agents_app, name="agents")
+
 
 @app.callback(invoke_without_command=True)
 def _default_command(ctx: typer.Context) -> None:
@@ -504,6 +507,41 @@ def report_default(
         suggestions = get_savings_suggestions(profiles)
         console.print()
         console.print(savings_panel(suggestions))
+
+
+# ── Agents commands ──────────────────────────────────────
+
+@agents_app.command("list")
+def agents_list(
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List all registered agent profiles under agents/."""
+    from src.cli.agents_cmd import cmd_list
+
+    console.print(cmd_list(as_json=json_out))
+
+
+@agents_app.command("validate")
+def agents_validate():
+    """Validate agent frontmatter and report errors/warnings."""
+    from src.cli.agents_cmd import cmd_validate
+
+    code, text = cmd_validate()
+    console.print(text)
+    if code != 0:
+        raise typer.Exit(code)
+
+
+@app.command("dry-run")
+def dry_run_cmd(
+    query: str = typer.Argument(..., help="Task query to plan (no execution)"),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Plan a task without executing — show routing, mode, and selected agent."""
+    from src.cli.dry_run import dry_run
+
+    rep = dry_run(query)
+    console.print(rep.to_json() if json_out else rep.to_text())
 
 
 # ── Entry ────────────────────────────────────────────────

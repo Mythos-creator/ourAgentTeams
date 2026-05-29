@@ -47,7 +47,9 @@ from src.memory.task_history import (
 )
 from src.models.api_model import APIModelWorker
 from src.models.base import BaseModelWorker, ModelResponse
+from src.models.factory import create_leader_worker, create_worker_for_model
 from src.models.local_model import OllamaWorker
+from src.models.retry import RetryingWorker
 from src.privacy.guard import PrivacyGuard, SanitizeResult
 
 
@@ -97,17 +99,23 @@ ProgressCallback = Optional[Callable[[str, dict[str, Any]], Awaitable[None]]]
 
 
 def _create_leader_worker(cfg: AppConfig) -> BaseModelWorker:
-    return OllamaWorker(
-        model=cfg.leader.model,
-        base_url=cfg.leader.ollama_base_url,
-    )
+    """Build the Leader worker via the unified factory.
+
+    Honors `cfg.leader.provider`, so the Leader can be an API model when desired.
+    Local Leader stays raw; API Leader is wrapped with RetryingWorker.
+    """
+    worker = create_leader_worker(cfg)
+    if isinstance(worker, APIModelWorker):
+        return RetryingWorker(worker)
+    return worker
 
 
 def _create_worker(model: str, cfg: AppConfig) -> BaseModelWorker:
-    for w in cfg.workers_api:
-        if w.model == model:
-            return APIModelWorker(model=model, api_key=w.api_key)
-    return OllamaWorker(model=model, base_url=cfg.leader.ollama_base_url)
+    """Build a subtask worker via the unified factory; auto-retry for API models."""
+    worker = create_worker_for_model(model, cfg)
+    if isinstance(worker, APIModelWorker):
+        return RetryingWorker(worker)
+    return worker
 
 
 WORKER_PROMPT = """\
@@ -515,6 +523,13 @@ class Orchestrator:
 
                 cost = resp.cost_usd or estimate_cost(resp.prompt_tokens, resp.completion_tokens, model_name)
                 self.cost_tracker.record(resp.prompt_tokens, resp.completion_tokens, cost)
+                # Persist monthly spend for budget_guard (skip free local models)
+                if cost > 0:
+                    try:
+                        from src.cost.budget_guard import add_monthly_spent
+                        add_monthly_spent(float(cost))
+                    except Exception:
+                        pass  # tracking must never break execution
 
                 if ms:
                     ms.status = "completed"
