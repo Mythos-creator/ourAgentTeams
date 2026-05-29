@@ -1,0 +1,41 @@
+name: reasoning
+description: 数理与逻辑推理基准集
+required_skills:
+  - reasoning
+  - math
+  - analysis
+items:
+  - id: reason_001
+    title: 鸡兔同笼
+    prompt: |
+      笼子里关着鸡和兔，共 35 个头、94 条腿。鸡和兔各有几只？
+      请给出推理过程。
+    reference: 鸡 23 只，兔 12 只
+
+  - id: reason_002
+    title: 时钟夹角
+    prompt: |
+      下午 3:15 时，时针与分针之间的夹角是多少度？
+      请说明计算过程。
+    reference: 7.5 度
+
+  - id: reason_003
+    title: 排序逻辑
+    prompt: |
+      A、B、C、D 四人参加比赛。已知：A 排在 B 前面；
+      C 不是最后；D 比 A 晚出场。请问出场顺序是什么？
+    reference: A、C、B、D（多解需要说明约束）
+
+  - id: reason_004
+    title: 概率题
+    prompt: |
+      袋子里有 3 个红球、2 个白球，不放回地连续抽两次，
+      第二次抽到红球的概率是多少？
+    reference: 3/5
+
+  - id: reason_005
+    title: 算术约束
+    prompt: |
+      用 1、2、3、4 各一次，加上 +、-、*、/ 与括号，
+      使其结果等于 24。给出至少一种解法。
+    reference: 例如 (1+2+3)*4=24

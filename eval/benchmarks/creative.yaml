@@ -1,0 +1,35 @@
+name: creative
+description: 创意写作与文案基准集
+required_skills:
+  - creative
+  - writing
+items:
+  - id: create_001
+    title: 产品发布短文
+    prompt: |
+      为一款"专注模式"的桌面应用写一段 80 字左右的产品发布微博文案，
+      语气轻快但不浮夸，突出"屏蔽通知 + 番茄计时"两个核心点。
+
+  - id: create_002
+    title: 邮件改写
+    prompt: |
+      把下面这段措辞生硬的邮件改写得更礼貌专业，但不丢失原意：
+      "你昨天答应今天给我数据的，到现在还没收到，赶紧发过来。"
+
+  - id: create_003
+    title: 故事续写
+    prompt: |
+      接着下面这句话往下写一段不超过 200 字的微小说，要有反转：
+      "她推开门的时候，屋子里的钟全部停在了同一个时间。"
+
+  - id: create_004
+    title: 译文润色
+    prompt: |
+      把下面这段直译润色为自然的中文：
+      "Innovation is not about saying yes to everything. It's about saying no to all but the most crucial features."
+
+  - id: create_005
+    title: Slogan 生成
+    prompt: |
+      为一款主打"减少屏幕时间"的家庭路由器，写 3 条不同风格的中文 slogan，
+      每条不超过 12 字。

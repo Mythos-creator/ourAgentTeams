@@ -1,0 +1,53 @@
+name: coding
+description: 编程任务基准集，覆盖算法、数据结构与常见后端片段
+required_skills:
+  - coding
+  - backend
+items:
+  - id: code_001
+    title: 反转链表
+    prompt: |
+      用 Python 实现一个迭代版的单链表反转函数 `reverse_list(head)`，
+      其中 ListNode 含 val 和 next 字段。要求 O(n) 时间、O(1) 额外空间。
+    reference: |
+      def reverse_list(head):
+          prev, cur = None, head
+          while cur:
+              nxt = cur.next
+              cur.next = prev
+              prev = cur
+              cur = nxt
+          return prev
+
+  - id: code_002
+    title: LRU 缓存
+    prompt: |
+      用 Python 实现一个固定容量的 LRU 缓存类 `LRUCache(capacity)`，
+      支持 get(key) 和 put(key, value)，命中或写入时刷新最近使用顺序，
+      所有操作 O(1)。
+    reference: 使用 OrderedDict 或 双向链表 + 哈希表
+
+  - id: code_003
+    title: Top-K 频次单词
+    prompt: |
+      给定字符串列表 words，返回出现频次最高的前 k 个单词；
+      频次相同按字典序升序。请用 Python 标准库实现。
+    reference: collections.Counter + heapq.nsmallest
+
+  - id: code_004
+    title: SQL 子查询改写
+    prompt: |
+      将以下 SQL 改写成 JOIN 形式（保持结果等价）：
+      SELECT u.id, u.name FROM users u
+      WHERE u.id IN (SELECT user_id FROM orders WHERE amount > 100);
+    reference: |
+      SELECT DISTINCT u.id, u.name
+      FROM users u JOIN orders o ON o.user_id = u.id
+      WHERE o.amount > 100;
+
+  - id: code_005
+    title: HTTP 重试装饰器
+    prompt: |
+      用 Python 实现一个装饰器 `retry(times=3, backoff=0.5)`，
+      在被装饰函数抛出异常时按指数退避自动重试，超过次数后抛出最后一次异常。
+    reference: time.sleep(backoff * 2**i)
