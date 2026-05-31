@@ -1,4 +1,14 @@
-"""Unified configuration loader with env-var interpolation and hot-reload."""
+"""Unified configuration loader with env-var interpolation and hot-reload.
+
+Path resolution (highest priority first):
+  1. ``OURAGENTTEAMS_HOME`` env var → use that directory for both config & data
+  2. Project mode: ``./config/config.yaml`` exists in cwd → use ./config + ./data
+  3. User mode: ``~/.config/ouragentteams`` (config) and
+                ``~/.local/share/ouragentteams`` (data, XDG-compliant)
+
+The module-level ``CONFIG_DIR`` / ``DATA_DIR`` names are preserved because
+existing tests monkeypatch them.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +22,76 @@ from typing import Any
 
 import yaml
 
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:  # pragma: no cover - dependency declared in pyproject.toml
+    def _load_dotenv(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+
+
 _ROOT = Path(__file__).resolve().parent.parent
-CONFIG_DIR = _ROOT / "config"
-DATA_DIR = _ROOT / "data"
+
+
+class ConfigNotInitializedError(FileNotFoundError):
+    """Raised when no config.yaml is found at any resolved path.
+
+    The CLI catches this and triggers the first-run setup wizard.
+    """
+
+
+def _resolve_user_home() -> Path:
+    """Return the user-mode config dir (~/.config/ouragentteams)."""
+    if env := os.environ.get("OURAGENTTEAMS_HOME"):
+        return Path(env).expanduser().resolve()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
+    return base / "ouragentteams"
+
+
+def _resolve_user_data_home() -> Path:
+    """Return the user-mode data dir (~/.local/share/ouragentteams)."""
+    if env := os.environ.get("OURAGENTTEAMS_HOME"):
+        return Path(env).expanduser().resolve()
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "ouragentteams"
+
+
+def _resolve_config_dir() -> Path:
+    """Pick CONFIG_DIR by priority: env var → cwd/config → ~/.config/ouragentteams."""
+    if env := os.environ.get("OURAGENTTEAMS_HOME"):
+        return Path(env).expanduser().resolve()
+    cwd_cfg = Path.cwd() / "config" / "config.yaml"
+    if cwd_cfg.exists():
+        return cwd_cfg.parent
+    project_cfg = _ROOT / "config" / "config.yaml"
+    if project_cfg.exists():
+        return project_cfg.parent
+    return _resolve_user_home()
+
+
+def _resolve_data_dir() -> Path:
+    """Pick DATA_DIR by priority: env var → project ./data (if config is project) → ~/.local/share."""
+    if env := os.environ.get("OURAGENTTEAMS_HOME"):
+        return Path(env).expanduser().resolve()
+    cfg_dir = _resolve_config_dir()
+    if cfg_dir == _ROOT / "config" or cfg_dir == Path.cwd() / "config":
+        return cfg_dir.parent / "data"
+    return _resolve_user_data_home()
+
+
+CONFIG_DIR = _resolve_config_dir()
+DATA_DIR = _resolve_data_dir()
+
+
+def is_initialized() -> bool:
+    """True iff a usable config.yaml exists at the resolved CONFIG_DIR."""
+    return (CONFIG_DIR / "config.yaml").exists()
+
+
+# Load .env from user home first, then cwd (cwd overrides nothing already set).
+_load_dotenv(_resolve_user_home() / ".env", override=False)
+_load_dotenv(Path.cwd() / ".env", override=False)
 
 ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
@@ -117,7 +194,13 @@ def _parse_workers(raw: dict) -> tuple[list[WorkerEntry], list[WorkerEntry]]:
 
 
 def load_config(path: Path | None = None) -> AppConfig:
-    path = path or (CONFIG_DIR / "config.yaml")
+    if path is None:
+        path = CONFIG_DIR / "config.yaml"
+        if not path.exists():
+            raise ConfigNotInitializedError(
+                f"No config.yaml found at {path}. "
+                "Run `ouragentteams init` to set up first."
+            )
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     raw = _walk_interpolate(raw)

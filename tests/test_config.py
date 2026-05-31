@@ -68,3 +68,20 @@ def test_user_profile_roundtrip(tmp_path, monkeypatch):
 
     loaded = load_user_profile()
     assert loaded["natural_language_summary"] == "Test user"
+
+
+def test_ouragentteams_home_env_priority(tmp_path, monkeypatch):
+    """OURAGENTTEAMS_HOME env var should take precedence over cwd / user-home."""
+    monkeypatch.setenv("OURAGENTTEAMS_HOME", str(tmp_path))
+    from src.config import _resolve_config_dir, _resolve_data_dir
+
+    assert _resolve_config_dir() == tmp_path.resolve()
+    assert _resolve_data_dir() == tmp_path.resolve()
+
+
+def test_load_config_raises_not_initialized(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.config.CONFIG_DIR", tmp_path)
+    from src.config import ConfigNotInitializedError
+
+    with pytest.raises(ConfigNotInitializedError):
+        load_config()

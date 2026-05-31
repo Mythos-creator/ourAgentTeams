@@ -10,10 +10,25 @@ from pathlib import Path
 
 import yaml
 
-from src.config import AppConfig
+from src.config import AppConfig, _resolve_user_home
 from src.memory.capability_store import get_profile
 
-AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
+
+def _resolve_agents_dir() -> Path:
+    """Resolve agents/ directory: env var → cwd/agents → ~/.config/ouragentteams/agents → project."""
+    import os
+    if env := os.environ.get("OURAGENTTEAMS_HOME"):
+        return Path(env).expanduser().resolve() / "agents"
+    cwd_agents = Path.cwd() / "agents"
+    if cwd_agents.exists():
+        return cwd_agents
+    project_agents = Path(__file__).resolve().parents[2] / "agents"
+    if project_agents.exists():
+        return project_agents
+    return _resolve_user_home() / "agents"
+
+
+AGENTS_DIR = _resolve_agents_dir()
 
 
 @dataclass

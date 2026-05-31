@@ -20,7 +20,8 @@ from src.cli.display import (
     subtask_tree, workers_table,
 )
 from src.config import (
-    AppConfig, DATA_DIR, WorkerEntry, load_config, load_models_profile,
+    AppConfig, ConfigNotInitializedError, DATA_DIR, WorkerEntry,
+    is_initialized, load_config, load_models_profile,
     load_user_profile, save_config, save_user_profile,
 )
 from src.cost.calculator import CostTracker
@@ -50,9 +51,34 @@ agents_app = typer.Typer(help="Inspect and validate agent definitions in agents/
 app.add_typer(agents_app, name="agents")
 
 
+# Subcommands that don't need configuration loaded (and shouldn't trigger the wizard).
+_NO_CFG_SUBCOMMANDS = {"init", "doctor"}
+
+
+def _ensure_initialized() -> None:
+    """Run the first-run wizard if no config.yaml exists at the resolved path.
+
+    Called at the top of every command that loads config. If stdin isn't a tty
+    we surface a friendly error instead of dropping into an unattended wizard.
+    """
+    if is_initialized():
+        return
+    if not sys.stdin.isatty():
+        console.print(
+            "[red]No configuration found.[/red] Run [cyan]ouragentteams init[/cyan] "
+            "in an interactive terminal to set up."
+        )
+        raise typer.Exit(2)
+    from src.cli.setup_wizard import run_first_run_wizard
+    run_first_run_wizard()
+
+
 @app.callback(invoke_without_command=True)
 def _default_command(ctx: typer.Context) -> None:
     """With no subcommand, open dual-mode interactive session (Single + Team)."""
+    if ctx.invoked_subcommand in _NO_CFG_SUBCOMMANDS:
+        return
+
     if ctx.invoked_subcommand is None:
         if not sys.stdin.isatty():
             console.print(
@@ -60,10 +86,14 @@ def _default_command(ctx: typer.Context) -> None:
                 "或 [bold]ouragentteams --help[/bold][/yellow]"
             )
             raise typer.Exit(1)
+        _ensure_initialized()
         from src.cli.interactive import run_interactive
 
         run_interactive()
         raise typer.Exit(0)
+
+    # For all other subcommands (chat/start/resume/...) ensure config is initialized.
+    _ensure_initialized()
 
 
 async def _progress_callback(event: str, data: dict[str, Any]) -> None:
@@ -542,6 +572,27 @@ def dry_run_cmd(
 
     rep = dry_run(query)
     console.print(rep.to_json() if json_out else rep.to_text())
+
+
+# ── Setup / Health ───────────────────────────────────────
+
+@app.command("init")
+def init_cmd(
+    force: bool = typer.Option(False, "--force", help="Overwrite existing configuration"),
+):
+    """Run the first-run setup wizard (Ollama, API keys, config files)."""
+    if not sys.stdin.isatty():
+        console.print("[red]`init` must be run in an interactive terminal.[/red]")
+        raise typer.Exit(2)
+    from src.cli.setup_wizard import run_first_run_wizard
+    run_first_run_wizard(force=force)
+
+
+@app.command("doctor")
+def doctor_cmd():
+    """Diagnose configuration & runtime (checks Python, Ollama, API keys, budget…)."""
+    from src.cli.doctor import run_doctor
+    raise typer.Exit(run_doctor())
 
 
 # ── Entry ────────────────────────────────────────────────

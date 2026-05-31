@@ -151,3 +151,57 @@ def create_progress() -> Progress:
         TimeElapsedColumn(),
         console=console,
     )
+
+
+# ── Setup wizard / doctor ────────────────────────────────────────────────────
+
+def wizard_welcome_panel() -> Panel:
+    content = Text()
+    content.append("👋 Welcome to ", style="bold")
+    content.append("ourAgentTeams", style="cyan bold")
+    content.append("!\n\n")
+    content.append(
+        "Looks like this is your first run. Let's set things up.\n"
+        "This wizard takes about 1–3 minutes.\n\n",
+        style="dim",
+    )
+    content.append("You can re-run this anytime with: ", style="dim")
+    content.append("ouragentteams init --force", style="cyan")
+    return Panel(content, title="[bold]Setup[/bold]", border_style="cyan", padding=(1, 2))
+
+
+def wizard_step_header(step: int, total: int, title: str) -> Panel:
+    txt = Text()
+    txt.append(f"Step {step}/{total}  ", style="dim")
+    txt.append(title, style="bold cyan")
+    return Panel(txt, border_style="cyan")
+
+
+def ollama_status_panel(running: bool, models: list[str]) -> Panel:
+    txt = Text()
+    if running:
+        txt.append("✓ Ollama is running\n", style="green bold")
+        if models:
+            txt.append(f"  Models pulled: {len(models)}\n", style="dim")
+            for m in models[:8]:
+                txt.append(f"    • {m}\n", style="cyan")
+            if len(models) > 8:
+                txt.append(f"    … and {len(models) - 8} more\n", style="dim")
+        else:
+            txt.append("  No models pulled yet.\n", style="yellow")
+    else:
+        txt.append("✗ Ollama not detected\n", style="red bold")
+        txt.append("  Either it isn't installed, or the daemon is not running.\n", style="dim")
+    return Panel(txt, title="[bold]Ollama[/bold]", border_style="green" if running else "yellow")
+
+
+def doctor_table(rows: list[dict[str, Any]]) -> Table:
+    """rows: [{name, status: ok|warn|fail, detail}]"""
+    table = Table(title="[bold]Health Check[/bold]", show_lines=False)
+    table.add_column("Check", style="bold")
+    table.add_column("Status")
+    table.add_column("Detail", overflow="fold")
+    icon = {"ok": "[green]✓ OK[/green]", "warn": "[yellow]⚠ WARN[/yellow]", "fail": "[red]✗ FAIL[/red]"}
+    for r in rows:
+        table.add_row(r.get("name", "?"), icon.get(r.get("status", "warn"), "?"), r.get("detail", ""))
+    return table
